@@ -4,6 +4,7 @@
 #include <Encoder.h>
 #include <LiquidCrystal.h>
 #include "PD_UFP.h"
+#include <symbols.h>
 
 // const uint8_t encoderPin1 = 0;
 // const uint8_t encoderPin2 = 1;
@@ -55,12 +56,35 @@ void debugPulse(){
   digitalWrite(9, LOW);
 }
 
+void printCustomChar(byte arr[], uint8_t slot, uint8_t x, uint8_t y){
+  lcd.createChar(slot, arr);
+  lcd.setCursor(x, y);
+  lcd.write(byte(slot));
+}
+
+void lcdLoading(uint8_t x, uint8_t y){
+  static uint8_t i = 0;
+  if(millis() - lastUpdate > 300){
+    if(i >= 3){
+      i = 0;
+      lcd.setCursor(x, y);
+      lcd.print("   ");
+    }else{
+      lcd.setCursor(x + i, y);
+      lcd.print('.');
+      i++;
+    }
+    lastUpdate = millis();
+  }
+}
+
 void testPSU(){
   // test PPS
   PD_UFP.init_PPS(PPS_V(5.0), PPS_A(1.0), PD_POWER_OPTION_MAX_5V);
   unsigned long testMillis = millis();
   while(millis() - testMillis < 1000){
     PD_UFP.run();
+    lcdLoading(3, 1);
     if (PD_UFP.is_PPS_ready()) {
       isPPS = true;
       break;
@@ -73,6 +97,7 @@ void testPSU(){
       if(PD_UFP.set_PPS(PPS_V(5.0), i)){
         while(PD_UFP.is_ps_transition()){
           PD_UFP.run();
+          lcdLoading(3, 1);
         }
         if (PD_UFP.is_PPS_ready()) {
           maxCurrent = toRealAmp(PD_UFP.get_current(), isPPS);
@@ -85,6 +110,7 @@ void testPSU(){
       if(PD_UFP.set_PPS(i, PPS_A(maxCurrent))){
         while(PD_UFP.is_ps_transition()){
           PD_UFP.run();
+          lcdLoading(3, 1);
         }
         if (PD_UFP.is_PPS_ready()) {
           maxVoltage = toRealVolt(PD_UFP.get_voltage(), isPPS);
@@ -97,6 +123,7 @@ void testPSU(){
     PD_UFP.set_power_option(PD_POWER_OPTION_MAX_VOLTAGE);
     while(PD_UFP.is_ps_transition()){
       PD_UFP.run();
+      lcdLoading(3, 1);
     }      
     maxVoltage = toRealVolt(PD_UFP.get_voltage(), isPPS);  
     
@@ -104,6 +131,7 @@ void testPSU(){
     PD_UFP.set_power_option(PD_POWER_OPTION_MAX_CURRENT);
     while(PD_UFP.is_ps_transition()){
       PD_UFP.run();
+      lcdLoading(3, 1);
     }
     maxCurrent = toRealAmp(PD_UFP.get_current(), isPPS);
   }
@@ -114,40 +142,37 @@ void setup() {
   pinMode(1, OUTPUT);
   pinMode(9, OUTPUT);
   Serial1.begin(115200);
-  // while(!Serial1) {
-  //   ;
-  // }
-  // Serial1.println("Encoder Test:");
   Wire.begin();
-  //PD_UFP.init_PPS(PPS_V(5.31), PPS_A(2.5));
-  //PD_UFP.init(PD_POWER_OPTION_MAX_20V);
-
-
-  // PD_UFP.clock_prescale_set(2);
-  // clock_prescale_set(clock_div_2);
-
-  //PD_UFP.init_PPS(PPS_V(5.3), PPS_A(1.0));
   PD_UFP.clock_prescale_set(2);
   clock_prescale_set(clock_div_2);
-
   lcd.begin(8, 2);
-
   lcd.clear();
   lcd.setCursor(0, 0);
   lcd.print("Testing");
   lcd.setCursor(0, 1);
-  lcd.print("PSU...");
+  lcd.print("PSU");
+  lcdLoading(3, 1);
   testPSU();
   lcd.clear();
+  char message[] = "Results: Max Volt: ";
   lcd.setCursor(0, 0);
+  lcd.print(message);
   lcd.print(maxVoltage);
-  //Serial1.print((float)((PD_UFP.get_voltage()-0.01)/50));
   lcd.print("V");
+  char message2[] = " Max Curr: ";
   lcd.setCursor(0, 1);
+  lcd.print("PPS: ");
+  if(isPPS)
+    lcd.print("Yes");
+  else
+    lcd.print("No ");
+  lcd.print(message2);
   lcd.print(maxCurrent);
   lcd.print("A");
-  if(isPPS){
-    lcd.print("PPS");
+  delay(1000);
+  for (uint8_t i = 0; i < sizeof(message) - 1; i++) {
+    lcd.scrollDisplayLeft();
+    delay(200);
   }
   delay(5000);
 
@@ -203,3 +228,5 @@ void loop() {
     displayUpdate();
   }
 }
+
+
