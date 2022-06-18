@@ -6,11 +6,15 @@
 #include "PD_UFP.h"
 #include <symbols.h>
 
-// const uint8_t encoderPin1 = 0;
-// const uint8_t encoderPin2 = 1;
+//#include <SoftwareSerial.h>// TODO remove this later
+//SoftwareSerial swSerial (8, 9);
 
-const uint8_t encoderPin1 = 5;
-const uint8_t encoderPin2 = 6;
+
+const uint8_t encoderPin1 = 1;
+const uint8_t encoderPin2 = 0;
+
+// const uint8_t encoderPin1 = 4;
+// const uint8_t encoderPin2 = 5;
 
 const uint8_t encoderBtnPin = 4;
 
@@ -19,10 +23,16 @@ LiquidCrystal lcd(19, 18, 15, 14, 16, 20);
 Encoder mainKnob(encoderPin1, encoderPin2);
 
 unsigned long lastUpdate = 0;
+unsigned long lastUpdate2 = 0;
 
 bool isPPS = false;
 float maxVoltage = 0.0;
 float maxCurrent = 0.0;
+
+uint16_t requestedVoltage = 0;
+uint16_t requestedCurrent = 0;
+
+bool outputEN = false;
 
 float toRealVolt(uint16_t v, bool PPS = false){
     if(PPS){
@@ -38,28 +48,117 @@ float toRealAmp(uint16_t a, bool PPS = false){
     return (a-0.01)/100.0;
 }
 
-void displayUpdate(void){
-  lastUpdate = millis();
-  lcd.clear();
-  lcd.setCursor(0, 0);
-  lcd.print(toRealVolt(PD_UFP.get_voltage(), isPPS));
-  //Serial1.print((float)((PD_UFP.get_voltage()-0.01)/50));
-  lcd.print("V");
-  lcd.setCursor(0, 1);
-  lcd.print(toRealAmp(PD_UFP.get_current(), isPPS));
-  lcd.print("A");
-}
-
-void debugPulse(){
-  digitalWrite(9, HIGH);
-  delay(1);
-  digitalWrite(9, LOW);
+// button pooling function, returns 0 if button is not pressed, 1 if button is pressed, 2 if long press
+uint8_t btnPooling(bool btn){
+  const unsigned int longPressInterval = 500;
+  static uint8_t status = 0;
+  static uint8_t oldStatus = 0;
+  static unsigned long gpTimer = 0;
+  uint8_t ret = 0;
+  if (btn == LOW && status == 0){
+    status = 1;
+    gpTimer = millis();
+  }else if (!btn && status == 1 && millis() - gpTimer >= 20){
+    status = 2;
+    gpTimer = millis();
+  }else if (!btn && status == 2 && millis() - gpTimer >= longPressInterval){
+    status = 3;
+  }else if (btn == HIGH){
+    status = 0;
+  }
+  if (status != oldStatus){
+    if (status == 3){
+      ret = 2;
+    }else if (status == 0 && oldStatus != 3){
+      ret = 1;
+    }else{
+      ret = 0;
+    }
+    oldStatus = status;
+  }
+  return ret;
 }
 
 void printCustomChar(byte arr[], uint8_t slot, uint8_t x, uint8_t y){
   lcd.createChar(slot, arr);
   lcd.setCursor(x, y);
   lcd.write(byte(slot));
+}
+
+long position = 0;
+
+void UIUpdate(void){
+  static uint16_t lastVoltage = 1;
+  static uint16_t lastCurrent = 1;
+  static bool editing = false;
+  static uint8_t editSubject = 0;
+
+  static uint8_t animationStage = 0;
+  if(millis() - lastUpdate2 > 300){
+    lastUpdate2 = millis();
+    if(outputEN){
+      printCustomChar(outEnAnim[animationStage], 1, 7, 0);
+      animationStage++;
+      if(animationStage >= 5){
+        animationStage = 0;
+      }
+    }else{
+      animationStage = 0;
+      printCustomChar(outDis, 1, 7, 0);
+    }
+  }
+
+  if((lastVoltage != requestedVoltage || lastCurrent != requestedCurrent) || (editing && millis() - lastUpdate >= 100)){
+    lastVoltage = requestedVoltage;
+    lastCurrent = requestedCurrent;
+    lastUpdate = millis();
+    lcd.clear();
+    if(outputEN){
+      printCustomChar(outEnAnim[animationStage], 1, 7, 0);
+    }else{
+      printCustomChar(outDis, 1, 7, 0);
+    }
+    lcd.setCursor(0, 0);
+    lcd.print(toRealVolt(lastVoltage, isPPS));
+    lcd.print("V");
+    if(editing && editSubject == 0)
+      lcd.print("<");
+    lcd.setCursor(0, 1);
+    lcd.print(toRealAmp(lastCurrent, isPPS));
+    lcd.print("A");
+    if(editing && editSubject == 1)
+      lcd.print("<");
+  }
+
+  uint8_t button = btnPooling(digitalRead(encoderBtnPin));
+
+  if(button == 2){
+    outputEN = !outputEN;
+  }else if(button == 1 && !editing){
+    editing = true;
+  }else if(button == 1 && editing){
+    editSubject++;
+    if(editSubject >= 2){
+      editSubject = 0;
+      editing = false;
+      lcd.setCursor(0, 1);
+      lcd.print(toRealAmp(lastCurrent, isPPS));
+      lcd.print("A ");
+    if(editing && editSubject == 1)
+      lcd.print("<");
+    }else if(editSubject == 0){
+      mainKnob.write(lastVoltage);
+      position = lastVoltage;
+    }else if(editSubject == 1){
+      mainKnob.write(lastCurrent);
+      position = lastCurrent;
+    }
+  }
+
+  if(editing && position >= 65535){
+    mainKnob.write(0);
+    position = 0;
+  }
 }
 
 void lcdLoading(uint8_t x, uint8_t y){
@@ -81,8 +180,8 @@ void lcdLoading(uint8_t x, uint8_t y){
 void testPSU(){
   // test PPS
   PD_UFP.init_PPS(PPS_V(5.0), PPS_A(1.0), PD_POWER_OPTION_MAX_5V);
-  unsigned long testMillis = millis();
-  while(millis() - testMillis < 1000){
+  lastUpdate2 = millis();
+  while(millis() - lastUpdate2 < 1000){
     PD_UFP.run();
     lcdLoading(3, 1);
     if (PD_UFP.is_PPS_ready()) {
@@ -141,10 +240,12 @@ void setup() {
   pinMode(encoderBtnPin, INPUT_PULLUP);
   pinMode(1, OUTPUT);
   pinMode(9, OUTPUT);
-  Serial1.begin(115200);
+  //Serial1.begin(9600);
+
   Wire.begin();
   PD_UFP.clock_prescale_set(2);
   clock_prescale_set(clock_div_2);
+
   lcd.begin(8, 2);
   lcd.clear();
   lcd.setCursor(0, 0);
@@ -152,7 +253,9 @@ void setup() {
   lcd.setCursor(0, 1);
   lcd.print("PSU");
   lcdLoading(3, 1);
+
   testPSU();
+
   lcd.clear();
   char message[] = "Results: Max Volt: ";
   lcd.setCursor(0, 0);
@@ -169,29 +272,41 @@ void setup() {
   lcd.print(message2);
   lcd.print(maxCurrent);
   lcd.print("A");
-  delay(1000);
+  lastUpdate = millis();
+  while (millis() - lastUpdate < 1000)
+  {
+    if(btnPooling(digitalRead(encoderBtnPin))){
+      goto done;
+    }
+  }
   for (uint8_t i = 0; i < sizeof(message) - 1; i++) {
     lcd.scrollDisplayLeft();
-    delay(200);
+    lastUpdate = millis();
+    while (millis() - lastUpdate < 200)
+    {
+      if(btnPooling(digitalRead(encoderBtnPin))){
+        goto done;
+      }
+    }
   }
-  delay(5000);
-
-  PD_UFP.set_PPS(PPS_V(5.0), PPS_A(2.8));
+  done:
+  lastUpdate2 = millis();
+  while(millis() - lastUpdate2 < 3000){
+    if(millis() - lastUpdate > 100) {
+      UIUpdate();
+      lastUpdate = millis();
+    }
+    if(btnPooling(digitalRead(encoderBtnPin))){
+        break;
+    }
+  }
+  if(isPPS)
+    PD_UFP.set_PPS(PPS_V(5.0), PPS_A(1.0));
 }
 
-long position = -999;
-
 void loop() {
-  long newPos;
-  newPos = mainKnob.read()/4;
-  if (newPos != position) {
-    // Serial1.print("Left = ");
-    // Serial1.print(newPos);
-    // Serial1.println();
-    position = newPos;
-  }
-  // if a character is sent from the Serial1 monitor,
-  // reset both back to zero.
+  position = mainKnob.read()/4;
+  UIUpdate();
   if (Serial1.available()) {
     // Serial1.read();
     // Serial1.println("Reset both knob to zero");
@@ -223,10 +338,6 @@ void loop() {
   //     PD_UFP.blink_led(400);  // Output less than 20V or 1.5A, blink LED
   //   }
   // }
-
-  if(millis() - lastUpdate > 100) {
-    displayUpdate();
-  }
 }
 
 
