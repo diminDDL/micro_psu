@@ -24,6 +24,7 @@ Encoder mainKnob(encoderPin1, encoderPin2);
 
 unsigned long lastUpdate = 0;
 unsigned long lastUpdate2 = 0;
+unsigned long lastUpdate3 = 0;
 
 bool isPPS = false;
 float maxVoltage = 0.0;
@@ -35,17 +36,35 @@ uint16_t requestedCurrent = 0;
 bool outputEN = false;
 
 float toRealVolt(uint16_t v, bool PPS = false){
-    if(PPS){
-        return (v-0.01)/50.0;
-    }
-    return (v-0.01)/20.0;
+  float result = 0.0;
+  if(PPS){
+    result = (v-0.01)/50.0;
+    if(result < 0)
+      return 0.0;
+    else
+      return result;
+  }
+  result = (v-0.01)/20.0;
+  if(result < 0)
+    return 0.0;
+  else
+    return result;
 }
 
 float toRealAmp(uint16_t a, bool PPS = false){
-    if(PPS){
-        return (a-0.01)/20.0;
-    }
-    return (a-0.01)/100.0;
+  float result = 0.0;
+  if(PPS){
+    result = (a-0.01)/20.0;
+    if(result < 0)
+      return 0.0;
+    else
+      return result;
+  }
+  result = (a-0.01)/100.0;
+  if(result < 0)
+    return 0.0;
+  else
+    return result;
 }
 
 // button pooling function, returns 0 if button is not pressed, 1 if button is pressed, 2 if long press
@@ -85,17 +104,18 @@ void printCustomChar(byte arr[], uint8_t slot, uint8_t x, uint8_t y){
   lcd.write(byte(slot));
 }
 
-long position = 0;
+int32_t position = 0;
 
 void UIUpdate(void){
   static uint16_t lastVoltage = 1;
   static uint16_t lastCurrent = 1;
   static bool editing = false;
   static uint8_t editSubject = 0;
-
+  static unsigned long lastAnimUPD = 0;
   static uint8_t animationStage = 0;
-  if(millis() - lastUpdate2 > 300){
-    lastUpdate2 = millis();
+
+  if(millis() - lastAnimUPD > 300){
+    lastAnimUPD = millis();
     if(outputEN){
       printCustomChar(outEnAnim[animationStage], 1, 7, 0);
       animationStage++;
@@ -136,6 +156,9 @@ void UIUpdate(void){
     outputEN = !outputEN;
   }else if(button == 1 && !editing){
     editing = true;
+    editSubject = 0;
+    mainKnob.write((int32_t)lastVoltage*4);
+    position = (int32_t)lastVoltage;
   }else if(button == 1 && editing){
     editSubject++;
     if(editSubject >= 2){
@@ -146,18 +169,34 @@ void UIUpdate(void){
       lcd.print("A ");
     if(editing && editSubject == 1)
       lcd.print("<");
-    }else if(editSubject == 0){
-      mainKnob.write(lastVoltage);
-      position = lastVoltage;
     }else if(editSubject == 1){
-      mainKnob.write(lastCurrent);
+      mainKnob.write(lastCurrent*4);
       position = lastCurrent;
     }
   }
 
-  if(editing && position >= 65535){
-    mainKnob.write(0);
-    position = 0;
+  if(editing && editSubject == 0){
+    requestedVoltage = position;
+    if(toRealVolt(requestedVoltage, isPPS) >= maxVoltage){
+      if(isPPS){
+        requestedVoltage = PPS_V(maxVoltage);
+        mainKnob.write((int32_t)requestedVoltage*4);
+        position = (int32_t)requestedVoltage;
+      }else{
+        //TODO do something for non PPS
+      }
+    }
+  }else if(editing && editSubject == 1){
+    requestedCurrent = position;
+    if(toRealAmp(requestedCurrent, isPPS) >= maxCurrent){
+      if(isPPS){
+        requestedCurrent = PPS_A(maxCurrent);
+        mainKnob.write((int32_t)requestedCurrent*4);
+        position = (int32_t)requestedCurrent;
+      }else{
+        //TODO do something for non PPS
+      }
+    }
   }
 }
 
@@ -239,7 +278,7 @@ void testPSU(){
 void setup() {
   pinMode(encoderBtnPin, INPUT_PULLUP);
   pinMode(1, OUTPUT);
-  pinMode(9, OUTPUT);
+  pinMode(12, OUTPUT);
   //Serial1.begin(9600);
 
   Wire.begin();
@@ -290,6 +329,7 @@ void setup() {
     }
   }
   done:
+  digitalWrite(12, HIGH);
   lastUpdate2 = millis();
   while(millis() - lastUpdate2 < 3000){
     if(millis() - lastUpdate > 100) {
@@ -300,8 +340,11 @@ void setup() {
         break;
     }
   }
+  digitalWrite(12, LOW);
   if(isPPS)
-    PD_UFP.set_PPS(PPS_V(5.0), PPS_A(1.0));
+    PD_UFP.set_PPS(PPS_V(10.0), PPS_A(1.0));
+  else
+    PD_UFP.set_power_option(PD_POWER_OPTION_MAX_VOLTAGE);
 }
 
 void loop() {
@@ -318,8 +361,9 @@ void loop() {
     PD_UFP.set_output(1);               // Turn on load switch 
     PD_UFP.set_led(1);                  // PPS output 4.2V 2.0A ready
   } else if (PD_UFP.is_power_ready()) { // Fail to trigger PPS, fall back
-    PD_UFP.set_output(0);               // Turn off load switch
-    PD_UFP.blink_led(400);              // blink LED
+    //PD_UFP.set_output(0);               // Turn off load switch
+    //PD_UFP.blink_led(400);              // blink LED
+    PD_UFP.set_output(1);
   }
 
   if (PD_UFP.is_PPS_ready()) {
