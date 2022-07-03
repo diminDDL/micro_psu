@@ -6,15 +6,8 @@
 #include "PD_UFP.h"
 #include <symbols.h>
 
-//#include <SoftwareSerial.h>// TODO remove this later
-//SoftwareSerial swSerial (8, 9);
-
-
 const uint8_t encoderPin1 = 1;
 const uint8_t encoderPin2 = 0;
-
-// const uint8_t encoderPin1 = 4;
-// const uint8_t encoderPin2 = 5;
 
 const uint8_t encoderBtnPin = 4;
 
@@ -35,6 +28,7 @@ uint16_t requestedCurrent = 0;
 
 bool outputEN = false;
 
+// convert the voltage increments to a float voltage value
 float toRealVolt(uint16_t v, bool PPS = false){
   float result = 0.0;
   if(PPS){
@@ -51,6 +45,7 @@ float toRealVolt(uint16_t v, bool PPS = false){
     return result;
 }
 
+// convert the current increments to a float current value
 float toRealAmp(uint16_t a, bool PPS = false){
   float result = 0.0;
   if(PPS){
@@ -98,14 +93,80 @@ uint8_t btnPooling(bool btn){
   return ret;
 }
 
+// print a custom character to the LCD
 void printCustomChar(byte arr[], uint8_t slot, uint8_t x, uint8_t y){
   lcd.createChar(slot, arr);
   lcd.setCursor(x, y);
   lcd.write(byte(slot));
 }
 
-int32_t position = 0;
+// tries to set the requested voltage and current to the given values 
+// if it fails to set the requested values, it sets the closest values and returns them
+// the first 16 bits are the set voltage and the next 16 bits are the set current
+uint32_t request(uint16_t requestVolt, uint16_t requestCurr, bool PPS){
+  const uint16_t PDList[5] = {PD_V(5.0), PD_V(9.0), PD_V(12.0), PD_V(15.0), PD_V(20.0)};
+  if(PPS){
+    if (requestVolt <= PPS_V(maxVoltage) && requestCurr <= PPS_V(maxCurrent)){
+      if(requestVolt < PPS_V(3.3)){
+        requestVolt = PPS_V(3.3);
+      }
+      if(requestCurr < PPS_A(0.01)){
+        requestCurr = PPS_A(0.01);
+      }
+      PD_UFP.set_PPS(requestVolt, requestCurr);
+      return ((uint32_t)(requestVolt << 16) | requestCurr);
+    }
+  }else{
+    // find the closest value in PDList to the requestVolt variable
+    uint16_t closestVolt = PDList[0];
+    uint16_t diff = 0xFFFF;
+    for(uint8_t i = 0; i < 5; i++){
+      if(abs(PDList[i] - requestVolt) < diff){
+        diff = abs(PDList[i] - requestVolt);
+        closestVolt = PDList[i];
+      }
+    }
+    uint16_t setVolt; // = PD_UFP.get_voltage();
+    switch (closestVolt)
+    {
+    case PD_V(5.0):
+      PD_UFP.set_power_option(PD_POWER_OPTION_MAX_5V);
+      setVolt = PD_V(5.0);
+      break;
+    case PD_V(9.0):
+      PD_UFP.set_power_option(PD_POWER_OPTION_MAX_9V);
+      setVolt = PD_V(9.0);
+      break;
+    case PD_V(12.0):
+      PD_UFP.set_power_option(PD_POWER_OPTION_MAX_12V);
+      setVolt = PD_V(12.0);
+      break;
+    case PD_V(15.0):
+      PD_UFP.set_power_option(PD_POWER_OPTION_MAX_15V);
+      setVolt = PD_V(15.0);
+      break;
+    case PD_V(20.0):
+      PD_UFP.set_power_option(PD_POWER_OPTION_MAX_20V);
+      setVolt = PD_V(20.0);
+      break;
+    default:
+      PD_UFP.set_power_option(PD_POWER_OPTION_MAX_5V);
+      setVolt = PD_V(3.0);
+      break;
+    }
+    uint16_t setCurr = PD_UFP.get_current();
+    // setVolt = PD_UFP.get_voltage();
 
+    // TODO implement PD_UFP.is_power_ready() probing
+    // TODO fix wrong closest value calculation
+
+    return (((uint32_t)setVolt << 16) | setCurr);
+  }
+  return 0;
+}
+
+int32_t position = 0;
+// a function for drawing and managing the UI
 void UIUpdate(void){
   static uint16_t lastVoltage = 1;
   static uint16_t lastCurrent = 1;
@@ -113,7 +174,7 @@ void UIUpdate(void){
   static uint8_t editSubject = 0;
   static unsigned long lastAnimUPD = 0;
   static uint8_t animationStage = 0;
-
+  static uint32_t result;
   if(millis() - lastAnimUPD > 300){
     lastAnimUPD = millis();
     if(outputEN){
@@ -135,8 +196,10 @@ void UIUpdate(void){
     lcd.clear();
     if(outputEN){
       printCustomChar(outEnAnim[animationStage], 1, 7, 0);
+      PD_UFP.set_output(true);
     }else{
       printCustomChar(outDis, 1, 7, 0);
+      PD_UFP.set_output(false);
     }
     lcd.setCursor(0, 0);
     lcd.print(toRealVolt(lastVoltage, isPPS));
@@ -167,8 +230,9 @@ void UIUpdate(void){
       lcd.setCursor(0, 1);
       lcd.print(toRealAmp(lastCurrent, isPPS));
       lcd.print("A ");
-    if(editing && editSubject == 1)
-      lcd.print("<");
+      result = request(requestedVoltage, requestedCurrent, isPPS);
+      requestedVoltage = result >> 16;
+      requestedCurrent = result & 0xFFFF;
     }else if(editSubject == 1){
       mainKnob.write(lastCurrent*4);
       position = lastCurrent;
@@ -176,25 +240,39 @@ void UIUpdate(void){
   }
 
   if(editing && editSubject == 0){
-    requestedVoltage = position;
+    if(position < 0){
+      mainKnob.write(0);
+      position = 0;
+    }else{
+      requestedVoltage = position;
+    }
     if(toRealVolt(requestedVoltage, isPPS) >= maxVoltage){
       if(isPPS){
         requestedVoltage = PPS_V(maxVoltage);
         mainKnob.write((int32_t)requestedVoltage*4);
         position = (int32_t)requestedVoltage;
       }else{
-        //TODO do something for non PPS
+        requestedVoltage = PD_V(maxVoltage);
+        mainKnob.write((int32_t)requestedVoltage*4);
+        position = (int32_t)requestedVoltage;
       }
     }
   }else if(editing && editSubject == 1){
+    if(position < 0){
+      mainKnob.write(0);
+      position = 0;
+    }else{
     requestedCurrent = position;
+    }
     if(toRealAmp(requestedCurrent, isPPS) >= maxCurrent){
       if(isPPS){
         requestedCurrent = PPS_A(maxCurrent);
         mainKnob.write((int32_t)requestedCurrent*4);
         position = (int32_t)requestedCurrent;
       }else{
-        //TODO do something for non PPS
+        requestedCurrent = PD_A(maxCurrent);
+        mainKnob.write((int32_t)requestedCurrent*4);
+        position = (int32_t)requestedCurrent;
       }
     }
   }
@@ -357,14 +435,14 @@ void loop() {
   }
 
   PD_UFP.run();
-  if (PD_UFP.is_PPS_ready()) {          // PPS trigger success
-    PD_UFP.set_output(1);               // Turn on load switch 
-    PD_UFP.set_led(1);                  // PPS output 4.2V 2.0A ready
-  } else if (PD_UFP.is_power_ready()) { // Fail to trigger PPS, fall back
-    //PD_UFP.set_output(0);               // Turn off load switch
-    //PD_UFP.blink_led(400);              // blink LED
-    PD_UFP.set_output(1);
-  }
+  // if (PD_UFP.is_PPS_ready()) {          // PPS trigger success
+  //   PD_UFP.set_output(1);               // Turn on load switch 
+  //   PD_UFP.set_led(1);                  // PPS output 4.2V 2.0A ready
+  // } else if (PD_UFP.is_power_ready()) { // Fail to trigger PPS, fall back
+  //   //PD_UFP.set_output(0);               // Turn off load switch
+  //   //PD_UFP.blink_led(400);              // blink LED
+  //   PD_UFP.set_output(1);
+  // }
 
   if (PD_UFP.is_PPS_ready()) {
     isPPS = true;
