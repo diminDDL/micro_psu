@@ -26,6 +26,8 @@ float maxCurrent = 0.0;
 uint16_t requestedVoltage = 0;
 uint16_t requestedCurrent = 0;
 
+const uint16_t PDList[5] = {PD_V(5.0), PD_V(9.0), PD_V(12.0), PD_V(15.0), PD_V(20.0)};
+
 bool outputEN = false;
 
 // convert the voltage increments to a float voltage value
@@ -104,9 +106,8 @@ void printCustomChar(byte arr[], uint8_t slot, uint8_t x, uint8_t y){
 // if it fails to set the requested values, it sets the closest values and returns them
 // the first 16 bits are the set voltage and the next 16 bits are the set current
 uint32_t request(uint16_t requestVolt, uint16_t requestCurr, bool PPS){
-  const uint16_t PDList[5] = {PD_V(5.0), PD_V(9.0), PD_V(12.0), PD_V(15.0), PD_V(20.0)};
   if(PPS){
-    if (requestVolt <= PPS_V(maxVoltage) && requestCurr <= PPS_V(maxCurrent)){
+    if (requestVolt <= PPS_V(maxVoltage) && requestCurr <= PPS_A(maxCurrent)){
       if(requestVolt < PPS_V(3.3)){
         requestVolt = PPS_V(3.3);
       }
@@ -114,51 +115,52 @@ uint32_t request(uint16_t requestVolt, uint16_t requestCurr, bool PPS){
         requestCurr = PPS_A(0.01);
       }
       PD_UFP.set_PPS(requestVolt, requestCurr);
-      return ((uint32_t)(requestVolt << 16) | requestCurr);
+
+    while(PD_UFP.is_ps_transition()){
+      PD_UFP.run();
     }
+    }
+  uint16_t setCurr = PD_UFP.get_current();
+  uint16_t setVolt = PD_UFP.get_voltage();
+  return (((uint32_t)setVolt << 16) | setCurr);
   }else{
     // find the closest value in PDList to the requestVolt variable
     uint16_t closestVolt = PDList[0];
-    uint16_t diff = 0xFFFF;
+    uint16_t diff = PDList[4] + 1;
     for(uint8_t i = 0; i < 5; i++){
-      if(abs(PDList[i] - requestVolt) < diff){
-        diff = abs(PDList[i] - requestVolt);
+      if(abs((int16_t)PDList[i] - (int16_t)requestVolt) < diff){
+        diff = abs((int16_t)PDList[i] - (int16_t)requestVolt);
         closestVolt = PDList[i];
       }
     }
-    uint16_t setVolt; // = PD_UFP.get_voltage();
     switch (closestVolt)
     {
     case PD_V(5.0):
       PD_UFP.set_power_option(PD_POWER_OPTION_MAX_5V);
-      setVolt = PD_V(5.0);
       break;
     case PD_V(9.0):
       PD_UFP.set_power_option(PD_POWER_OPTION_MAX_9V);
-      setVolt = PD_V(9.0);
       break;
     case PD_V(12.0):
       PD_UFP.set_power_option(PD_POWER_OPTION_MAX_12V);
-      setVolt = PD_V(12.0);
       break;
     case PD_V(15.0):
       PD_UFP.set_power_option(PD_POWER_OPTION_MAX_15V);
-      setVolt = PD_V(15.0);
       break;
     case PD_V(20.0):
       PD_UFP.set_power_option(PD_POWER_OPTION_MAX_20V);
-      setVolt = PD_V(20.0);
       break;
     default:
       PD_UFP.set_power_option(PD_POWER_OPTION_MAX_5V);
-      setVolt = PD_V(3.0);
       break;
     }
-    uint16_t setCurr = PD_UFP.get_current();
-    // setVolt = PD_UFP.get_voltage();
 
-    // TODO implement PD_UFP.is_power_ready() probing
-    // TODO fix wrong closest value calculation
+    while(PD_UFP.is_ps_transition()){
+      PD_UFP.run();
+    }
+
+    uint16_t setCurr = PD_UFP.get_current();
+    uint16_t setVolt = PD_UFP.get_voltage();
 
     return (((uint32_t)setVolt << 16) | setCurr);
   }
@@ -183,9 +185,11 @@ void UIUpdate(void){
       if(animationStage >= 5){
         animationStage = 0;
       }
+      PD_UFP.set_output(true);
     }else{
       animationStage = 0;
       printCustomChar(outDis, 1, 7, 0);
+      PD_UFP.set_output(false);
     }
   }
 
@@ -340,7 +344,7 @@ void testPSU(){
     while(PD_UFP.is_ps_transition()){
       PD_UFP.run();
       lcdLoading(3, 1);
-    }      
+    }
     maxVoltage = toRealVolt(PD_UFP.get_voltage(), isPPS);  
     
     // check current
@@ -357,7 +361,6 @@ void setup() {
   pinMode(encoderBtnPin, INPUT_PULLUP);
   pinMode(1, OUTPUT);
   pinMode(12, OUTPUT);
-  //Serial1.begin(9600);
 
   Wire.begin();
   PD_UFP.clock_prescale_set(2);
@@ -382,10 +385,15 @@ void setup() {
   char message2[] = " Max Curr: ";
   lcd.setCursor(0, 1);
   lcd.print("PPS: ");
-  if(isPPS)
+  if(isPPS){
     lcd.print("Yes");
-  else
+    requestedVoltage = PPS_V(5.0);
+    requestedCurrent = PPS_A(1.0);
+  }else{
     lcd.print("No ");
+    requestedVoltage = PD_V(5.0);
+    requestedCurrent = PD_A(1.0);
+  }
   lcd.print(message2);
   lcd.print(maxCurrent);
   lcd.print("A");
@@ -407,59 +415,31 @@ void setup() {
     }
   }
   done:
-  digitalWrite(12, HIGH);
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(maxVoltage);
+  lcd.print("V");
+  lcd.setCursor(0, 1);
+  lcd.print(maxCurrent);
+  lcd.print("A");
   lastUpdate2 = millis();
   while(millis() - lastUpdate2 < 3000){
-    if(millis() - lastUpdate > 100) {
-      UIUpdate();
-      lastUpdate = millis();
-    }
     if(btnPooling(digitalRead(encoderBtnPin))){
         break;
     }
   }
-  digitalWrite(12, LOW);
-  if(isPPS)
-    PD_UFP.set_PPS(PPS_V(10.0), PPS_A(1.0));
-  else
-    PD_UFP.set_power_option(PD_POWER_OPTION_MAX_VOLTAGE);
+  request(requestedVoltage, requestedCurrent, isPPS);
+  uint32_t result = request(requestedVoltage, requestedCurrent, isPPS); // I need to run this 2 times to get PD PSUs to return the correct current the first time, idk why
+  requestedVoltage = result >> 16;
+  requestedCurrent = result & 0xFFFF;
 }
 
 void loop() {
   position = mainKnob.read()/4;
   UIUpdate();
-  if (Serial1.available()) {
-    // Serial1.read();
-    // Serial1.println("Reset both knob to zero");
-    mainKnob.write(0);
-  }
 
   PD_UFP.run();
-  // if (PD_UFP.is_PPS_ready()) {          // PPS trigger success
-  //   PD_UFP.set_output(1);               // Turn on load switch 
-  //   PD_UFP.set_led(1);                  // PPS output 4.2V 2.0A ready
-  // } else if (PD_UFP.is_power_ready()) { // Fail to trigger PPS, fall back
-  //   //PD_UFP.set_output(0);               // Turn off load switch
-  //   //PD_UFP.blink_led(400);              // blink LED
-  //   PD_UFP.set_output(1);
-  // }
 
-  if (PD_UFP.is_PPS_ready()) {
-    isPPS = true;
-    digitalWrite(9, HIGH);
-  }else{
-    isPPS = false;
-    digitalWrite(9, LOW);
-  }
-  // if (PD_UFP.is_power_ready()) { 
-  //   if (PD_UFP.get_voltage() == PD_V(20.0) && PD_UFP.get_current() >= PD_A(1.5)) {
-  //     PD_UFP.set_output(1);   // Turn on load switch 
-  //     PD_UFP.set_led(1);      // Output reach 20V and 1.5A, set indicators on
-  //   } else {
-  //     PD_UFP.set_output(0);   // Turn off load switch
-  //     PD_UFP.blink_led(400);  // Output less than 20V or 1.5A, blink LED
-  //   }
-  // }
 }
 
 
