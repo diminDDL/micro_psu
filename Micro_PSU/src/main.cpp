@@ -282,6 +282,32 @@ void UIUpdate(void){
   }
 }
 
+int32_t encoderProcessor(int32_t pos){
+  const uint16_t timeout = 500;                   // if we rotate faster than this we want acceleration
+  const uint16_t accelerationFactor = 200;        // the formula for the added positions is pos = accelerationFactor / timeSinceLastRotation, 
+  static uint32_t lastRotation;                   // the time of the last rotation
+  static int32_t lastPosition;                    // the last position of the encoder
+  uint32_t diff = millis() - lastRotation;        // the time since the last rotation
+  uint32_t newPos = lastPosition;                 // the new position of the encoder
+  int8_t dir = 1;
+  if(pos < 0){
+    dir = -1;
+  }else{
+    dir = 1;
+  }
+  if(lastPosition != pos + lastPosition){         // if the position has changed
+    lastRotation = millis();                      // update the last rotation time
+    if(diff < timeout){                           // if we rotate faster than the timeout we want acceleration
+      newPos = lastPosition + dir*(abs(pos) + (accelerationFactor / diff)); // add the positions
+    } else {
+      newPos = lastPosition + pos;                // else just add the positions
+    }
+  }
+  // final steps
+  lastPosition = newPos;                          // update the last position of the encoder
+  return newPos;
+}
+
 void lcdLoading(uint8_t x, uint8_t y){
   static uint8_t i = 0;
   if(millis() - lastUpdate > 300){
@@ -434,11 +460,31 @@ void setup() {
   requestedCurrent = result & 0xFFFF;
 }
 
+int32_t encoderNormalized(){
+  int32_t rawPos = mainKnob.read();
+  static int32_t scaledPos;
+  if(rawPos / 4 != scaledPos){
+    scaledPos = rawPos / 4;
+    mainKnob.write(0);
+  }
+  return scaledPos;
+}
 void loop() {
-  position = mainKnob.read()/4;
-  UIUpdate();
+  int32_t rawPos = encoderNormalized();
+  position = encoderProcessor(rawPos);
 
-  PD_UFP.run();
+  lcd.clear();
+  lcd.setCursor(0, 0);
+  lcd.print(position);
+  lcd.setCursor(0, 1);
+  lcd.print(rawPos);
+
+  delay(1);
+
+  // TODO fix the position handling inside UIUpdate()
+  //UIUpdate();
+
+  //PD_UFP.run();
 
 }
 
